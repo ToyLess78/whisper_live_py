@@ -8,30 +8,27 @@ import whisper
 import time
 import queue
 
-# далі ваш код...
-
-
-# Налаштування
+# Settings
 SAMPLE_RATE = 16000
-BLOCK_SECONDS = 5  # кожні 5 сек обробка
+BLOCK_SECONDS = 5  # process every 5 seconds
 
-# Черга для аудіоданих
+# Queue for audio data
 audio_queue = queue.Queue()
 
-# Завантаження Whisper-моделі
-print("🔁 Завантаження моделі Whisper...")
+# Loading the Whisper model
+print("🔁 Loading Whisper model...")
 model = whisper.load_model("small")
-print("✅ Модель завантажено. Слухаємо...")
+print("✅ Model loaded. Listening...")
 
 
-# Функція зворотного виклику
+# Callback function
 def audio_callback(indata, frames, time_info, status):
     if status:
         print("⚠️", status)
     audio_queue.put(indata.copy())
 
 
-# Пошук індексу пристрою "BlackHole 2ch"
+# Find device index for "BlackHole 2ch"
 device_name = "BlackHole 2ch"
 device_index = None
 for idx, dev in enumerate(sd.query_devices()):
@@ -40,9 +37,9 @@ for idx, dev in enumerate(sd.query_devices()):
         break
 
 if device_index is None:
-    raise RuntimeError("Не знайдено пристрій BlackHole 2ch")
+    raise RuntimeError("BlackHole 2ch device not found")
 
-# Аудіо потік
+# Audio stream
 with sd.InputStream(
         samplerate=SAMPLE_RATE,
         channels=1,
@@ -59,21 +56,21 @@ with sd.InputStream(
             data = audio_queue.get()
             buffer = np.append(buffer, data, axis=0)
 
-            # обробка кожні N секунд
+            # processing every N seconds
             if time.time() - last_time > BLOCK_SECONDS:
                 last_time = time.time()
                 if len(buffer) == 0:
                     continue
 
-                # перетворення формату
+                # format conversion
                 audio = buffer.flatten()
                 buffer = np.empty((0, 1), dtype='float32')
 
-                # збереження аудіо тимчасово в .wav
-                print("🔊 Розпізнавання мовлення...")
-                result = model.transcribe(audio, fp16=False, language='uk')  # або 'uk'
+                # temporarily save audio to .wav
+                print("🔊 Speech recognition...")
+                result = model.transcribe(audio, fp16=False, language='uk')  # or 'uk'
                 print(f"[🗣️]: {result['text'].strip()}\n")
 
         except KeyboardInterrupt:
-            print("\n⏹️ Завершення...")
+            print("\n⏹️ Stopping...")
             break
