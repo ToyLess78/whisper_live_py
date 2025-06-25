@@ -11,7 +11,7 @@ import whisper
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-# --- SSL fix для macOS ---
+# --- SSL fix for macOS ---
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
@@ -19,46 +19,46 @@ except AttributeError:
 else:
     ssl._create_default_https_context = _create_unverified_https_context
 
-# --- Налаштування ---
+# --- Configuration ---
 SAMPLE_RATE = 16000
 BLOCK_SECONDS = 5
 DEVICE_NAME = "BlackHole 2ch"
-CONTEXT_SIZE = 3  # кількість попередніх речень для GPT
+CONTEXT_SIZE = 3  # number of previous sentences for GPT context
 
-# --- Завантаження .env ---
+# --- Load .env ---
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# --- Черги ---
+# --- Queues ---
 audio_queue = queue.Queue()
 transcribe_queue = queue.Queue()
 text_queue = asyncio.Queue()
 
-# --- Буфер для збереження останніх речень ---
+# --- Buffer for storing recent sentences ---
 sentence_buffer = []
 
-# --- Лог з міткою часу ---
+# --- Logging with timestamp ---
 def log(msg):
     print(f"[LOG {time.strftime('%H:%M:%S')}]: {msg}")
 
-# --- Проста функція розбиття на речення ---
+# --- Simple sentence splitter ---
 def split_into_sentences(text):
-    sentence_endings = re.compile(r'(?<=[.!?])\s+|\n+|— ')
+    sentence_endings = re.compile(r'(?<=[.!?])\s+|\n+|\u2014 ')
     return sentence_endings.split(text.strip())
 
-# --- Завантаження моделі Whisper ---
+# --- Load Whisper model ---
 log("🔁 Loading Whisper model...")
 model = whisper.load_model("small")
 log("✅ Whisper model loaded.")
 
-# --- Callback аудіо потоку ---
+# --- Audio stream callback ---
 def audio_callback(indata, frames, time_info, status):
     if status:
         log(f"⚠️ Audio status: {status}")
     audio_queue.put(indata.copy())
 
-# --- Перевірка: чи є питанням? ---
+# --- Check if text is a question ---
 async def is_question_openai_async(text: str) -> bool:
     prompt = f"Decide if the following text is a question. Answer only 'yes' or 'no'.\n\nText: \"{text}\""
     try:
@@ -79,7 +79,7 @@ async def is_question_openai_async(text: str) -> bool:
         log(f"OpenAI API error: {e}")
         return False
 
-# --- Обробка текстів ---
+# --- Process transcribed texts ---
 async def process_texts():
     while True:
         text = await text_queue.get()
@@ -94,7 +94,7 @@ async def process_texts():
             if not sentence:
                 continue
 
-            # Додаємо в контекстний буфер
+            # Add to context buffer
             sentence_buffer.append(sentence)
             if len(sentence_buffer) > CONTEXT_SIZE:
                 sentence_buffer.pop(0)
@@ -106,7 +106,7 @@ async def process_texts():
             if is_question:
                 print(f"\n❓ Question detected: {sentence}\n")
 
-# --- Транскрипція аудіо (в окремому потоці) ---
+# --- Transcribe audio in separate thread ---
 def transcribe_worker():
     while True:
         audio_chunk = transcribe_queue.get()
@@ -119,7 +119,7 @@ def transcribe_worker():
             log(f"📝 Transcription result: {text}")
             asyncio.run_coroutine_threadsafe(text_queue.put(text), async_loop)
 
-# --- Async loop у фоновому потоці ---
+# --- Start async loop in background thread ---
 def start_async_loop(loop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
@@ -128,7 +128,7 @@ async_loop = asyncio.new_event_loop()
 threading.Thread(target=start_async_loop, args=(async_loop,), daemon=True).start()
 asyncio.run_coroutine_threadsafe(process_texts(), async_loop)
 
-# --- Знаходження аудіо-пристрою ---
+# --- Find audio device by name ---
 device_index = None
 for idx, dev in enumerate(sd.query_devices()):
     if DEVICE_NAME in dev['name']:
@@ -138,10 +138,10 @@ if device_index is None:
     raise RuntimeError(f"Device '{DEVICE_NAME}' not found")
 log(f"🎧 Using device: {DEVICE_NAME} (index {device_index})")
 
-# --- Запуск потоку транскрипції ---
+# --- Start transcription thread ---
 threading.Thread(target=transcribe_worker, daemon=True).start()
 
-# --- Основний цикл прослуховування ---
+# --- Main audio listening loop ---
 with sd.InputStream(
     samplerate=SAMPLE_RATE,
     channels=1,
