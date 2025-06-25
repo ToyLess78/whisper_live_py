@@ -23,8 +23,9 @@ else:
 SAMPLE_RATE = 16000
 BLOCK_SECONDS = 5
 DEVICE_NAME = "BlackHole 2ch"
+CONTEXT_SIZE = 3  # кількість попередніх речень для GPT
 
-# --- Завантаження .env змінних ---
+# --- Завантаження .env ---
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -34,33 +35,36 @@ audio_queue = queue.Queue()
 transcribe_queue = queue.Queue()
 text_queue = asyncio.Queue()
 
-# --- Проста розбивка на речення ---
-def split_into_sentences(text):
-    sentence_endings = re.compile(r'(?<=[.!?]) +')
-    return sentence_endings.split(text.strip())
+# --- Буфер для збереження останніх речень ---
+sentence_buffer = []
 
-# --- Логи з часом ---
+# --- Лог з міткою часу ---
 def log(msg):
     print(f"[LOG {time.strftime('%H:%M:%S')}]: {msg}")
 
+# --- Проста функція розбиття на речення ---
+def split_into_sentences(text):
+    sentence_endings = re.compile(r'(?<=[.!?])\s+|\n+|— ')
+    return sentence_endings.split(text.strip())
+
 # --- Завантаження моделі Whisper ---
 log("🔁 Loading Whisper model...")
-model = whisper.load_model("small")  # або 'tiny' для швидкості
+model = whisper.load_model("small")
 log("✅ Whisper model loaded.")
 
-# --- Callback для аудіо потоку ---
+# --- Callback аудіо потоку ---
 def audio_callback(indata, frames, time_info, status):
     if status:
         log(f"⚠️ Audio status: {status}")
     audio_queue.put(indata.copy())
 
-# --- Класифікація чи є речення питанням ---
+# --- Перевірка: чи є питанням? ---
 async def is_question_openai_async(text: str) -> bool:
     prompt = f"Decide if the following text is a question. Answer only 'yes' or 'no'.\n\nText: \"{text}\""
     try:
         log(f"→ GPT prompt: {text}")
         response = await client.chat.completions.create(
-            model="gpt-4o",  # або "gpt-3.5-turbo"
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "You classify if the input text is a question."},
                 {"role": "user", "content": prompt}
@@ -75,7 +79,7 @@ async def is_question_openai_async(text: str) -> bool:
         log(f"OpenAI API error: {e}")
         return False
 
-# --- Обробка текстів асинхронно ---
+# --- Обробка текстів ---
 async def process_texts():
     while True:
         text = await text_queue.get()
@@ -84,16 +88,25 @@ async def process_texts():
         log(f"📄 Received transcription: {text}")
         sentences = split_into_sentences(text)
         log(f"✂️ Split into sentences: {sentences}")
+
         for sentence in sentences:
             sentence = sentence.strip()
             if not sentence:
                 continue
-            log(f"🤔 Checking if question: {sentence}")
-            is_question = await is_question_openai_async(sentence)
+
+            # Додаємо в контекстний буфер
+            sentence_buffer.append(sentence)
+            if len(sentence_buffer) > CONTEXT_SIZE:
+                sentence_buffer.pop(0)
+
+            context_text = " ".join(sentence_buffer)
+            log(f"🤔 Checking if question (context): {context_text}")
+            is_question = await is_question_openai_async(context_text)
+
             if is_question:
                 print(f"\n❓ Question detected: {sentence}\n")
 
-# --- Робітник для Whisper ---
+# --- Транскрипція аудіо (в окремому потоці) ---
 def transcribe_worker():
     while True:
         audio_chunk = transcribe_queue.get()
@@ -106,7 +119,7 @@ def transcribe_worker():
             log(f"📝 Transcription result: {text}")
             asyncio.run_coroutine_threadsafe(text_queue.put(text), async_loop)
 
-# --- Асинхронний цикл у фоновому потоці ---
+# --- Async loop у фоновому потоці ---
 def start_async_loop(loop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
