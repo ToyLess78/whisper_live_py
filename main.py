@@ -4,12 +4,12 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import ssl
 import asyncio
 import threading
-import queue
-import time
-import os
-import re
 import numpy as np
 import sounddevice as sd
+import collections
+import wave
+import time
+import keyboard
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from faster_whisper import WhisperModel
@@ -24,110 +24,71 @@ else:
 
 # --- Settings ---
 SAMPLE_RATE = 16000
-BLOCK_SECONDS = 5
+CHANNELS = 1
+DURATION_SECONDS = 10  # Reduced duration for faster response
 DEVICE_NAME = "BlackHole 2ch"
-CONTEXT_SIZE = 3
+BUFFER_SIZE = SAMPLE_RATE * DURATION_SECONDS
 
 # --- Load .env ---
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# --- Queues ---
-audio_queue = queue.Queue()
-transcribe_queue = queue.Queue()
-text_queue = asyncio.Queue()
-
-# --- Context buffer ---
-sentence_buffer = []
-
 # --- Logger ---
 def log(msg):
     print(f"[LOG {time.strftime('%H:%M:%S')}]: {msg}")
 
-# --- Sentence splitter ---
-def split_into_sentences(text):
-    sentence_endings = re.compile(r'(?<=[.!?])\s+|\n+|— ')
-    return sentence_endings.split(text.strip())
-
-# --- Load faster-whisper model ---
-log("🔁 Loading faster-whisper model...")
-model = WhisperModel("small", compute_type="int8")
-log("✅ faster-whisper model loaded.")
+# --- Buffer for last N seconds of audio ---
+audio_buffer = collections.deque(maxlen=BUFFER_SIZE)
 
 # --- Audio callback ---
 def audio_callback(indata, frames, time_info, status):
     if status:
         log(f"⚠️ Audio status: {status}")
-    audio_queue.put(indata.copy())
+    audio_buffer.extend(indata[:, 0])
 
-# --- OpenAI question checker ---
-async def is_question_openai_async(text: str) -> bool:
-    prompt = f"Decide if the following text is a question. Answer only 'yes' or 'no'.\n\nText: \"{text}\""
+# --- Save buffer to WAV ---
+def save_buffer_to_wav(filename="recorded_chunk.wav"):
+    audio_np = np.array(audio_buffer, dtype=np.float32)
+    audio_int16 = (audio_np * 32767).astype(np.int16)
+    with wave.open(filename, 'wb') as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(audio_int16.tobytes())
+    log(f"💾 Saved last {DURATION_SECONDS}s to {filename}")
+    return filename
+
+# --- Transcribe and ask GPT ---
+async def handle_question_from_audio():
+    filename = save_buffer_to_wav()
+    segments, _ = model.transcribe(filename, language="uk")
+    text = " ".join([seg.text for seg in segments]).strip()
+    log(f"📝 Transcribed: {text}")
+    if not text:
+        print("⚠️ No text recognized.")
+        return
+
+    prompt = f"Please answer this interview-related question as if you are a developer: \"{text}\""
     try:
-        log(f"→ GPT prompt: {text}")
         response = await client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You classify if the input text is a question."},
+                {"role": "system", "content": "You are a helpful developer being interviewed."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=3,
-            temperature=0,
+            temperature=0.7,
+            max_tokens=300
         )
-        answer = response.choices[0].message.content.strip().lower()
-        log(f"← GPT response: {answer}")
-        return answer.startswith("yes")
+        answer = response.choices[0].message.content.strip()
+        print("\n🤖 GPT Answer:\n", answer, "\n")
     except Exception as e:
-        log(f"OpenAI API error: {e}")
-        return False
+        log(f"❌ OpenAI error: {e}")
 
-# --- Text processing task ---
-async def process_texts():
-    while True:
-        text = await text_queue.get()
-        if text is None:
-            break
-        log(f"📄 Received transcription: {text}")
-        sentences = split_into_sentences(text)
-        log(f"✂️ Split into sentences: {sentences}")
-
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            sentence_buffer.append(sentence)
-            if len(sentence_buffer) > CONTEXT_SIZE:
-                sentence_buffer.pop(0)
-
-            context_text = " ".join(sentence_buffer)
-            log(f"🤔 Checking if question (context): {context_text}")
-            is_question = await is_question_openai_async(context_text)
-
-            if is_question:
-                print(f"\n❓ Question detected: {sentence}\n")
-
-# --- Transcription worker ---
-def transcribe_worker():
-    while True:
-        audio_chunk = transcribe_queue.get()
-        if audio_chunk is None:
-            break
-        log("🔊 Transcribing audio chunk...")
-        segments, _ = model.transcribe(audio_chunk, language="uk")
-        text = " ".join([seg.text for seg in segments]).strip()
-        if text:
-            log(f"📝 Transcription result: {text}")
-            asyncio.run_coroutine_threadsafe(text_queue.put(text), async_loop)
-
-# --- Async loop runner ---
-def start_async_loop(loop):
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-async_loop = asyncio.new_event_loop()
-threading.Thread(target=start_async_loop, args=(async_loop,), daemon=True).start()
-asyncio.run_coroutine_threadsafe(process_texts(), async_loop)
+# --- Load model ---
+log("🔁 Loading faster-whisper model...")
+model = WhisperModel("tiny", compute_type="int8")  # Smaller model for faster transcription
+log("✅ faster-whisper model loaded.")
 
 # --- Find device index ---
 device_index = None
@@ -139,34 +100,20 @@ if device_index is None:
     raise RuntimeError(f"Device '{DEVICE_NAME}' not found")
 log(f"🎧 Using device: {DEVICE_NAME} (index {device_index})")
 
-# --- Start transcription thread ---
-threading.Thread(target=transcribe_worker, daemon=True).start()
-
-# --- Main recording loop ---
-with sd.InputStream(
-    samplerate=SAMPLE_RATE,
-    channels=1,
-    dtype='float32',
-    callback=audio_callback,
-    device=device_index
-):
-    buffer = np.empty((0, 1), dtype='float32')
-    last_time = time.time()
-    log("✅ Listening... Press Ctrl+C to stop.")
-
-    try:
+# --- Start recording ---
+log("✅ Listening... Press 's' to send last 10s to GPT or Ctrl+C to stop.")
+try:
+    with sd.InputStream(
+        samplerate=SAMPLE_RATE,
+        channels=1,
+        dtype='float32',
+        callback=audio_callback,
+        device=device_index
+    ):
         while True:
-            data = audio_queue.get()
-            buffer = np.append(buffer, data, axis=0)
-            if time.time() - last_time >= BLOCK_SECONDS:
-                last_time = time.time()
-                if len(buffer) == 0:
-                    continue
-                audio_chunk = buffer.flatten()
-                buffer = np.empty((0, 1), dtype='float32')
-                transcribe_queue.put(audio_chunk)
-    except KeyboardInterrupt:
-        log("⏹️ Stopping...")
-        transcribe_queue.put(None)
-        asyncio.run_coroutine_threadsafe(text_queue.put(None), async_loop)
-        async_loop.call_soon_threadsafe(async_loop.stop)
+            if keyboard.is_pressed('s'):
+                log("🎯 's' pressed: analyzing last 10s...")
+                asyncio.run(handle_question_from_audio())
+                time.sleep(0.5)  # Reduced delay to improve responsiveness
+except KeyboardInterrupt:
+    log("⏹️ Stopping...")
