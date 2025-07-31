@@ -25,7 +25,7 @@ else:
 # --- Settings ---
 SAMPLE_RATE = 16000
 CHANNELS = 1
-DURATION_SECONDS = 10  # Reduced duration for faster response
+DURATION_SECONDS = 20
 DEVICE_NAME = "BlackHole 2ch"
 BUFFER_SIZE = SAMPLE_RATE * DURATION_SECONDS
 
@@ -87,7 +87,7 @@ async def handle_question_from_audio():
 
 # --- Load model ---
 log("🔁 Loading faster-whisper model...")
-model = WhisperModel("tiny", compute_type="int8")  # Smaller model for faster transcription
+model = WhisperModel("small", compute_type="int8")
 log("✅ faster-whisper model loaded.")
 
 # --- Find device index ---
@@ -101,7 +101,7 @@ if device_index is None:
 log(f"🎧 Using device: {DEVICE_NAME} (index {device_index})")
 
 # --- Start recording ---
-log("✅ Listening... Press 's' to send last 10s to GPT or Ctrl+C to stop.")
+log("✅ Listening... Press 's' to send last 20s to GPT or Ctrl+C to stop.")
 try:
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -112,8 +112,8 @@ try:
     ):
         while True:
             if keyboard.is_pressed('s'):
-                log("🎯 's' pressed: analyzing last 10s...")
+                log("🎯 's' pressed: analyzing last 20s...")
                 asyncio.run(handle_question_from_audio())
-                time.sleep(0.5)  # Reduced delay to improve responsiveness
+                time.sleep(1.5)  # to prevent retrigger
 except KeyboardInterrupt:
     log("⏹️ Stopping...")
