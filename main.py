@@ -26,9 +26,11 @@ else:
 # --- Settings ---
 SAMPLE_RATE = 16000
 CHANNELS = 1
-DURATION_SECONDS = 5
+DURATION_10S = 10
+DURATION_5S = 5
 DEVICE_NAME = "BlackHole 2ch"
-BUFFER_SIZE = SAMPLE_RATE * DURATION_SECONDS
+# Buffer for maximum duration (10 seconds)
+BUFFER_SIZE = SAMPLE_RATE * DURATION_10S
 
 # --- Load .env ---
 load_dotenv()
@@ -57,14 +59,24 @@ def audio_callback(indata, frames, time_info, status):
 
 
 # --- Convert buffer to numpy array (in memory) ---
-def get_audio_data():
+def get_audio_data(duration_seconds=10):
     """Convert buffer to numpy array without saving to file"""
-    audio_np = np.array(audio_buffer, dtype=np.float32)
+    # Calculate how many samples we need for the specified duration
+    samples_needed = SAMPLE_RATE * duration_seconds
+
+    # Get the required number of samples from the end of the buffer
+    if len(audio_buffer) >= samples_needed:
+        audio_data = list(audio_buffer)[-samples_needed:]
+    else:
+        # If buffer doesn't have enough data, use all available
+        audio_data = list(audio_buffer)
+
+    audio_np = np.array(audio_data, dtype=np.float32)
     return audio_np
 
 
 # --- Transcribe and ask GPT (optimized) ---
-async def handle_question_from_audio():
+async def handle_question_from_audio(duration_seconds=10):
     global is_processing
 
     with processing_lock:
@@ -74,10 +86,10 @@ async def handle_question_from_audio():
         is_processing = True
 
     try:
-        log("🔄 Processing audio...")
+        log(f"🔄 Processing last {duration_seconds}s of audio...")
 
         # Get audio data directly from buffer (no file I/O)
-        audio_data = get_audio_data()
+        audio_data = get_audio_data(duration_seconds)
 
         if len(audio_data) == 0:
             log("⚠️ No audio data in buffer")
@@ -93,7 +105,7 @@ async def handle_question_from_audio():
             log("⚠️ No meaningful text recognized")
             return
 
-        log(f"📝 Transcribed: {text}")
+        log(f"📝 Transcribed ({duration_seconds}s): {text}")
 
         # Get GPT response
         await get_gpt_response(text)
@@ -181,20 +193,29 @@ DEBOUNCE_TIME = 1.0  # seconds
 def on_press(key):
     global last_press_time
     try:
+        current_time = time.time()
+        duration = None
+
+        # Check which key was pressed
         if key.char == 's':
-            current_time = time.time()
+            duration = DURATION_10S
+            log("🎯 's' pressed: analyzing last 10s...")
+        elif key.char == 'd':
+            duration = DURATION_5S
+            log("🎯 'd' pressed: analyzing last 5s...")
+
+        if duration is not None:
             if current_time - last_press_time < DEBOUNCE_TIME:
                 log("⚠️ Key press too fast, ignoring")
                 return
 
             last_press_time = current_time
-            log("🎯 's' pressed: analyzing last 5s...")
 
             # Run in background thread to avoid blocking
             def run_async():
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                loop.run_until_complete(handle_question_from_audio())
+                loop.run_until_complete(handle_question_from_audio(duration))
                 loop.close()
 
             thread = threading.Thread(target=run_async, daemon=True)
@@ -217,7 +238,7 @@ except:
     log("⚠️ Model warm-up failed, continuing...")
 
 # --- Start recording ---
-log("✅ Listening... Press 's' to send last 5s to GPT or Ctrl+C to stop.")
+log("✅ Listening... Press 's' for last 10s or 'd' for last 5s, Ctrl+C to stop.")
 try:
     with sd.InputStream(
             samplerate=SAMPLE_RATE,
