@@ -1,5 +1,4 @@
 import os
-
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import ssl
@@ -37,11 +36,9 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-
 # --- Logger ---
 def log(msg):
     print(f"[LOG {time.strftime('%H:%M:%S')}]: {msg}")
-
 
 # --- Buffer for last N seconds of audio ---
 audio_buffer = collections.deque(maxlen=BUFFER_SIZE)
@@ -50,13 +47,11 @@ audio_buffer = collections.deque(maxlen=BUFFER_SIZE)
 is_processing = False
 processing_lock = threading.Lock()
 
-
 # --- Audio callback ---
 def audio_callback(indata, frames, time_info, status):
     if status:
         log(f"⚠️ Audio status: {status}")
     audio_buffer.extend(indata[:, 0])
-
 
 # --- Convert buffer to numpy array (in memory) ---
 def get_audio_data(duration_seconds=10):
@@ -73,7 +68,6 @@ def get_audio_data(duration_seconds=10):
 
     audio_np = np.array(audio_data, dtype=np.float32)
     return audio_np
-
 
 # --- Transcribe and ask GPT (optimized) ---
 async def handle_question_from_audio(duration_seconds=10):
@@ -116,10 +110,8 @@ async def handle_question_from_audio(duration_seconds=10):
         with processing_lock:
             is_processing = False
 
-
 async def transcribe_audio(audio_data):
     """Transcribe audio data directly without file I/O"""
-
     def _transcribe():
         # Use WhisperModel with audio data directly
         segments, _ = model.transcribe(audio_data, language="uk")
@@ -129,6 +121,28 @@ async def transcribe_audio(audio_data):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _transcribe)
 
+def format_text_with_wrap(text, width=60):
+    """Format text with word wrapping at specified width"""
+    import textwrap
+
+    # Split text into paragraphs (preserve existing line breaks)
+    paragraphs = text.split('\n')
+    formatted_paragraphs = []
+
+    for paragraph in paragraphs:
+        if paragraph.strip():  # Skip empty lines
+            # Wrap each paragraph
+            wrapped = textwrap.fill(
+                paragraph.strip(),
+                width=width,
+                break_long_words=False,
+                break_on_hyphens=False
+            )
+            formatted_paragraphs.append(wrapped)
+        else:
+            formatted_paragraphs.append('')  # Preserve empty lines
+
+    return '\n'.join(formatted_paragraphs)
 
 async def get_gpt_response(text):
     """Get GPT response with optimized settings"""
@@ -138,19 +152,24 @@ async def get_gpt_response(text):
         response = await client.chat.completions.create(
             model="gpt-4o-mini",  # Faster and cheaper model
             messages=[
-                {"role": "system",
-                 "content": "You are a helpful developer being interviewed. Be concise but informative."},
+                {"role": "system", "content": "You are a helpful developer being interviewed. Be concise but informative."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
-            max_tokens=200,  # Reduced for faster response
+            max_tokens=500,  # Reduced for faster response
             stream=False
         )
         answer = response.choices[0].message.content.strip()
-        print(f"\n🤖 GPT Answer:\n{answer}\n")
+
+        # Format the answer with word wrapping
+        formatted_answer = format_text_with_wrap(answer, width=80)
+
+        print(f"\n🤖 GPT Answer:")
+        print(formatted_answer)
+        print()  # Empty line after answer
+
     except Exception as e:
         log(f"❌ OpenAI error: {e}")
-
 
 # --- Load model with optimizations ---
 log("🔁 Loading faster-whisper model...")
@@ -163,7 +182,6 @@ model = WhisperModel(
 )
 log("✅ faster-whisper model loaded.")
 
-
 # --- Voice Activity Detection (optional optimization) ---
 def has_speech(audio_data, threshold=0.01, min_duration=1.0):
     """Simple VAD to skip processing silence"""
@@ -173,7 +191,6 @@ def has_speech(audio_data, threshold=0.01, min_duration=1.0):
     # Calculate RMS energy
     rms = np.sqrt(np.mean(audio_data ** 2))
     return rms > threshold
-
 
 # --- Find device index ---
 device_index = None
@@ -188,7 +205,6 @@ log(f"🎧 Using device: {DEVICE_NAME} (index {device_index})")
 # --- Keyboard listener with debouncing ---
 last_press_time = 0
 DEBOUNCE_TIME = 1.0  # seconds
-
 
 def on_press(key):
     global last_press_time
@@ -224,7 +240,6 @@ def on_press(key):
     except AttributeError:
         pass  # special keys
 
-
 listener = pynput_keyboard.Listener(on_press=on_press)
 listener.start()
 
@@ -241,12 +256,12 @@ except:
 log("✅ Listening... Press 's' for last 10s or 'd' for last 5s, Ctrl+C to stop.")
 try:
     with sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype='float32',
-            callback=audio_callback,
-            device=device_index,
-            blocksize=1024  # Smaller blocks for lower latency
+        samplerate=SAMPLE_RATE,
+        channels=1,
+        dtype='float32',
+        callback=audio_callback,
+        device=device_index,
+        blocksize=1024  # Smaller blocks for lower latency
     ):
         while True:
             time.sleep(0.1)
