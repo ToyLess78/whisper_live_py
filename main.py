@@ -9,10 +9,10 @@ import sounddevice as sd
 import collections
 import wave
 import time
-import keyboard
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from faster_whisper import WhisperModel
+from pynput import keyboard as pynput_keyboard
 
 # --- SSL fix for macOS ---
 try:
@@ -25,7 +25,7 @@ else:
 # --- Settings ---
 SAMPLE_RATE = 16000
 CHANNELS = 1
-DURATION_SECONDS = 10  # Reduced duration for faster response
+DURATION_SECONDS = 10
 DEVICE_NAME = "BlackHole 2ch"
 BUFFER_SIZE = SAMPLE_RATE * DURATION_SECONDS
 
@@ -87,7 +87,7 @@ async def handle_question_from_audio():
 
 # --- Load model ---
 log("🔁 Loading faster-whisper model...")
-model = WhisperModel("tiny", compute_type="int8")  # Smaller model for faster transcription
+model = WhisperModel("tiny", compute_type="int8")
 log("✅ faster-whisper model loaded.")
 
 # --- Find device index ---
@@ -100,6 +100,18 @@ if device_index is None:
     raise RuntimeError(f"Device '{DEVICE_NAME}' not found")
 log(f"🎧 Using device: {DEVICE_NAME} (index {device_index})")
 
+# --- Keyboard listener ---
+def on_press(key):
+    try:
+        if key.char == 's':
+            log("🎯 's' pressed: analyzing last 10s...")
+            asyncio.run(handle_question_from_audio())
+    except AttributeError:
+        pass  # special keys
+
+listener = pynput_keyboard.Listener(on_press=on_press)
+listener.start()
+
 # --- Start recording ---
 log("✅ Listening... Press 's' to send last 10s to GPT or Ctrl+C to stop.")
 try:
@@ -111,9 +123,6 @@ try:
         device=device_index
     ):
         while True:
-            if keyboard.is_pressed('s'):
-                log("🎯 's' pressed: analyzing last 10s...")
-                asyncio.run(handle_question_from_audio())
-                time.sleep(0.5)  # Reduced delay to improve responsiveness
+            time.sleep(0.1)
 except KeyboardInterrupt:
     log("⏹️ Stopping...")
