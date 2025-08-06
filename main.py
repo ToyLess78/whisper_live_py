@@ -162,7 +162,7 @@ async def get_gpt_response(text):
         answer = response.choices[0].message.content.strip()
 
         # Format the answer with word wrapping
-        formatted_answer = format_text_with_wrap(answer, width=80)
+        formatted_answer = format_text_with_wrap(answer, width=60)
 
         print(f"\n🤖 GPT Answer:")
         print(formatted_answer)
